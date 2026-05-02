@@ -1,0 +1,108 @@
+version: "3.9"
+
+services:
+  # ── FastAPI Application ──────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lexai_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://lexai:lexai_secret@postgres:5432/lexai_db
+      - REDIS_URL=redis://redis:6379/0
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SECRET_KEY=${SECRET_KEY:-supersecretkey_change_in_production}
+      - ENVIRONMENT=development
+      - LOG_LEVEL=DEBUG
+    volumes:
+      - ./app:/app/app        # hot-reload in dev
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - lexai_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── PostgreSQL ───────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: lexai_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: lexai
+      POSTGRES_PASSWORD: lexai_secret
+      POSTGRES_DB: lexai_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    networks:
+      - lexai_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lexai -d lexai_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: lexai_redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - lexai_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Adminer (DB UI for dev) ──────────────────────────────────
+  adminer:
+    image: adminer:latest
+    container_name: lexai_adminer
+    ports:
+      - "8080:8080"
+    networks:
+      - lexai_net
+    restart: unless-stopped
+    profiles:
+      - dev
+
+  # ── Redis Commander (Redis UI for dev) ───────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: lexai_redis_ui
+    ports:
+      - "8081:8081"
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    networks:
+      - lexai_net
+    restart: unless-stopped
+    profiles:
+      - dev
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  lexai_net:
+    driver: bridge
